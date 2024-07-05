@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "multiflow"
+version = "0.1.0"
+description = ""
+authors = ["Laurie Voss <github@seldo.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+llama-index-core = "^0.10.52.post2"
+llama-index-llms-openai = "^0.1.25"
+python-dotenv = "^1.0.1"
+colorama = "^0.4.6"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
