@@ -16,14 +16,6 @@ from enum import Enum
 from typing import Optional, List, Callable
 from llama_index.utils.workflow import draw_all_possible_flows
 
-class Speaker(str, Enum):
-    STOCK_LOOKUP = "stock_lookup"
-    AUTHENTICATE = "authenticate"
-    ACCOUNT_BALANCE = "account_balance"
-    TRANSFER_MONEY = "transfer_money"
-    CONCIERGE = "concierge"
-    ORCHESTRATOR = "orchestrator"
-
 class InitializeEvent(Event):
     pass
 
