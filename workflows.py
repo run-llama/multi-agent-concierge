@@ -14,6 +14,7 @@ from llama_index.agent.openai import OpenAIAgent
 from llama_index.core.tools import FunctionTool
 from enum import Enum
 from typing import Optional, List, Callable
+from llama_index.utils.workflow import draw_all_possible_flows
 
 class Speaker(str, Enum):
     STOCK_LOOKUP = "stock_lookup"
@@ -65,7 +66,7 @@ class ConciergeWorkflow(Workflow):
         return ConciergeEvent()
   
     @step(pass_context=True)
-    async def concierge(self, ctx: Context, ev: ConciergeEvent | StartEvent) -> InitializeEvent | StopEvent:
+    async def concierge(self, ctx: Context, ev: ConciergeEvent | StartEvent) -> InitializeEvent | StopEvent | OrchestratorEvent:
         # initialize user if not already done
         if ("user" not in ctx.data):
             return InitializeEvent()
@@ -437,6 +438,8 @@ class ConciergeAgent():
         # otherwise, get some user input and then loop
         user_msg_str = input("> ").strip()
         return self.trigger_event(request=user_msg_str)
+
+draw_all_possible_flows(ConciergeWorkflow,filename="concierge_flows.html")
 
 async def main():
     c = ConciergeWorkflow(timeout=1200, verbose=True)
