@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "multiflow"
+name = "mutli-agent-concierge"
 version = "0.1.0"
 description = ""
 authors = ["Laurie Voss <github@seldo.com>"]
