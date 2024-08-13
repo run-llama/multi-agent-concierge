@@ -10,11 +10,13 @@ from llama_index.core.workflow import (
     StopEvent
 )
 from llama_index.llms.openai import OpenAI
-from llama_index.agent.openai import OpenAIAgent
+from llama_index.llms.anthropic import Anthropic
+from llama_index.core.agent import FunctionCallingAgentWorker
 from llama_index.core.tools import FunctionTool
 from enum import Enum
 from typing import Optional, List, Callable
 from llama_index.utils.workflow import draw_all_possible_flows
+from colorama import Fore, Back, Style
 
 class InitializeEvent(Event):
     pass
@@ -47,13 +49,15 @@ class ConciergeWorkflow(Workflow):
             "username": None,
             "session_token": None,
             "account_id": None,
-            "account_balance": 0,
+            "account_balance": None,
         }
         ctx.data["success"] = None
         ctx.data["redirecting"] = None
         ctx.data["overall_request"] = None
 
-        ctx.data["llm"] = llm=OpenAI(model="gpt-4o",temperature=0.4)
+        ctx.data["llm"] = OpenAI(model="gpt-4o",temperature=0.4)
+        #ctx.data["llm"] = Anthropic(model="claude-3-5-sonnet-20240620",temperature=0.4)
+        #ctx.data["llm"] = Anthropic(model="claude-3-opus-20240229",temperature=0.4)
 
         return ConciergeEvent()
   
@@ -65,14 +69,6 @@ class ConciergeWorkflow(Workflow):
         
         # initialize concierge if not already done
         if ("concierge" not in ctx.data):
-            def dummy_tool() -> bool:
-                """A tool that does nothing."""
-                print("Doing nothing.")
-
-            tools = [
-                FunctionTool.from_defaults(fn=dummy_tool)
-            ]
-
             system_prompt = (f"""
                 You are a helpful assistant that is helping a user navigate a financial system.
                 Your job is to ask the user questions to figure out what they want to do, and give them the available things they can do.
@@ -80,14 +76,17 @@ class ConciergeWorkflow(Workflow):
                 * looking up a stock price            
                 * authenticating the user
                 * checking an account balance
-                * transferring money between accounts            
+                * transferring money between accounts
+                You should start by listing the things you can help them do.            
             """)
 
-            ctx.data["concierge"] = OpenAIAgent.from_tools(
-                tools=tools,
+            agent_worker = FunctionCallingAgentWorker.from_tools(
+                tools=[],
                 llm=ctx.data["llm"],
+                allow_parallel_tool_calls=False,
                 system_prompt=system_prompt
             )
+            ctx.data["concierge"] = agent_worker.as_agent()        
 
         concierge = ctx.data["concierge"]
         if ctx.data["overall_request"] is not None:
@@ -98,43 +97,55 @@ class ConciergeWorkflow(Workflow):
         elif (ev.just_completed is not None):
             response = concierge.chat(f"FYI, the user has just completed the task: {ev.just_completed}")
         elif (ev.need_help):
+            print("The previous process needs help with ", ev.request)
             return OrchestratorEvent(request=ev.request)
         else:
             # first time experience
             response = concierge.chat("Hello!")
 
-        print(response)
+        print(Fore.MAGENTA + str(response) + Style.RESET_ALL)
         user_msg_str = input("> ").strip()
         return OrchestratorEvent(request=user_msg_str)
     
     @step(pass_context=True)
-    async def orchestrator(self, ctx: Context, ev: OrchestratorEvent) -> ConciergeEvent | StockLookupEvent | AuthenticateEvent | AccountBalanceEvent | TransferMoneyEvent:
+    async def orchestrator(self, ctx: Context, ev: OrchestratorEvent) -> ConciergeEvent | StockLookupEvent | AuthenticateEvent | AccountBalanceEvent | TransferMoneyEvent | StopEvent:
 
         print(f"Orchestrator received request: {ev.request}")
 
         def emit_stock_lookup() -> bool:
-            """Call this if the user wants to look up a stock price."""
+            """Call this if the user wants to look up a stock price."""      
+            print("__emitted: stock lookup")      
             self.send_event(StockLookupEvent(request=ev.request))
             return True
 
         def emit_authenticate() -> bool:
             """Call this if the user wants to authenticate"""
+            print("__emitted: authenticate")
             self.send_event(AuthenticateEvent(request=ev.request))
             return True
 
         def emit_account_balance() -> bool:
             """Call this if the user wants to check an account balance."""
+            print("__emitted: account balance")
             self.send_event(AccountBalanceEvent(request=ev.request))
             return True
 
         def emit_transfer_money() -> bool:
             """Call this if the user wants to transfer money."""
+            print("__emitted: transfer money")
             self.send_event(TransferMoneyEvent(request=ev.request))
             return True
 
         def emit_concierge() -> bool:
             """Call this if the user wants to do something else or you can't figure out what they want to do."""
+            print("__emitted: concierge")
             self.send_event(ConciergeEvent(request=ev.request))
+            return True
+
+        def emit_stop() -> bool:
+            """Call this if the user wants to stop or exit the system."""
+            print("__emitted: stop")
+            self.send_event(StopEvent())
             return True
 
         tools = [
@@ -142,21 +153,27 @@ class ConciergeWorkflow(Workflow):
             FunctionTool.from_defaults(fn=emit_authenticate),
             FunctionTool.from_defaults(fn=emit_account_balance),
             FunctionTool.from_defaults(fn=emit_transfer_money),
-            FunctionTool.from_defaults(fn=emit_concierge)
+            FunctionTool.from_defaults(fn=emit_concierge),
+            FunctionTool.from_defaults(fn=emit_stop)
         ]
         
         system_prompt = (f"""
             You are on orchestration agent.
-            Your job is to decide which agent to run based on the current state of the user and what they've asked to do. You run an agent by calling the appropriate tool for that agent.
+            Your job is to decide which agent to run based on the current state of the user and what they've asked to do. 
+            You run an agent by calling the appropriate tool for that agent.
+            You do not need to call more than one tool.
+            You do not need to figure out dependencies between agents; the agents will handle that themselves.
                             
             If you did not call any tools, return the string "FAILED" without quotes and nothing else.
         """)
 
-        ctx.data["orchestrator"] = OpenAIAgent.from_tools(
-            tools,
-            llm=OpenAI(model="gpt-4o",temperature=0.4),
-            system_prompt=system_prompt,
+        agent_worker = FunctionCallingAgentWorker.from_tools(
+            tools=tools,
+            llm=ctx.data["llm"],
+            allow_parallel_tool_calls=False,
+            system_prompt=system_prompt
         )
+        ctx.data["orchestrator"] = agent_worker.as_agent()        
         
         orchestrator = ctx.data["orchestrator"]
         response = str(orchestrator.chat(ev.request))
@@ -166,7 +183,7 @@ class ConciergeWorkflow(Workflow):
             return OrchestratorEvent(request=ev.request)
         
     @step(pass_context=True)
-    async def stock_lookup(self, ctx: Context, ev: StockLookupEvent) -> OrchestratorEvent:
+    async def stock_lookup(self, ctx: Context, ev: StockLookupEvent) -> ConciergeEvent:
 
         print(f"Stock lookup received request: {ev.request}")
 
@@ -202,7 +219,7 @@ class ConciergeWorkflow(Workflow):
         return ctx.data["stock_lookup_agent"].handle_event(ev)
 
     @step(pass_context=True)
-    async def authenticate(self, ctx: Context, ev: AuthenticateEvent) -> OrchestratorEvent:
+    async def authenticate(self, ctx: Context, ev: AuthenticateEvent) -> ConciergeEvent:
 
         if ("authentication_agent" not in ctx.data):
             def store_username(username: str) -> None:
@@ -244,7 +261,7 @@ class ConciergeWorkflow(Workflow):
         return ctx.data["authentication_agent"].handle_event(ev)
     
     @step(pass_context=True)
-    def account_balance(self, ctx: Context, ev: AccountBalanceEvent) -> OrchestratorEvent:
+    def account_balance(self, ctx: Context, ev: AccountBalanceEvent) -> AuthenticateEvent | ConciergeEvent:
         
         if("account_balance_agent" not in ctx.data):
             def get_account_id(account_name: str) -> str:
@@ -301,7 +318,7 @@ class ConciergeWorkflow(Workflow):
         return ctx.data["account_balance_agent"].handle_event(ev)
     
     @step(pass_context=True)
-    def transfer_money(self, ctx: Context, ev: TransferMoneyEvent) -> OrchestratorEvent:
+    def transfer_money(self, ctx: Context, ev: TransferMoneyEvent) -> AuthenticateEvent | AccountBalanceEvent | ConciergeEvent:
 
         if("transfer_money_agent" not in ctx.data):
             def transfer_money(from_account_id: str, to_account_id: str, amount: int) -> None:
@@ -319,27 +336,32 @@ class ConciergeWorkflow(Workflow):
             def has_balance() -> bool:
                 """Useful for checking if an account has a balance."""
                 print("Checking if account has a balance")
-                if ctx.data["user"]["account_balance"] is not None:
+                if ctx.data["user"]["account_balance"] is not None and ctx.data["user"]["account_balance"] > 0:
+                    print("It does", ctx.data["user"]["account_balance"])
                     return True
+                else:
+                    return False
             
             def is_authenticated() -> bool:
                 """Checks if the user has a session token."""
                 print("Transfer money agent is checking if authenticated")
                 if ctx.data["user"]["session_token"] is not None:
                     return True
+                else:
+                    return False
                 
             def authenticate() -> None:
                 """Call this if the user needs to authenticate."""
                 print("Account balance agent is authenticating")
                 ctx.data["redirecting"] = True
-                ctx.data["overall_request"] = "Check account balance"
+                ctx.data["overall_request"] = "Transfer money"
                 self.send_event(AuthenticateEvent(request="Authenticate"))
 
             def check_balance() -> None:
                 """Call this if the user needs to check their account balance."""
                 print("Transfer money agent is checking balance")
                 ctx.data["redirecting"] = True
-                ctx.data["overall_request"] = "Check account balance"
+                ctx.data["overall_request"] = "Transfer money"
                 self.send_event(AccountBalanceEvent(request="Check balance"))
             
             system_prompt = (f"""
@@ -369,7 +391,6 @@ class ConciergeAgent():
     tools: list[FunctionTool]
     system_prompt: str
     context: Context
-    agent: OpenAIAgent
     current_event: Event
     trigger_event: Event
 
@@ -393,7 +414,6 @@ class ConciergeAgent():
         def done() -> None:
             """When you complete your task, call this tool."""
             print(f"{self.name} is complete")
-
             self.context.data["redirecting"] = True
             parent.send_event(ConciergeEvent(just_completed=self.name))
 
@@ -401,7 +421,7 @@ class ConciergeAgent():
             """If the user asks to do something you don't know how to do, call this."""
             print(f"{self.name} needs help")
             self.context.data["redirecting"] = True
-            return ConciergeEvent(request=self.current_event.request,need_help=True)
+            parent.send_event(ConciergeEvent(request=self.current_event.request,need_help=True))
 
         self.tools = [
             FunctionTool.from_defaults(fn=done),
@@ -410,17 +430,19 @@ class ConciergeAgent():
         for t in tools:
             self.tools.append(FunctionTool.from_defaults(fn=t))
 
-        self.agent = OpenAIAgent.from_tools(
+        agent_worker = FunctionCallingAgentWorker.from_tools(
             self.tools,
             llm=self.context.data["llm"],
-            system_prompt=system_prompt,
+            allow_parallel_tool_calls=False,
+            system_prompt=self.system_prompt
         )
+        self.agent = agent_worker.as_agent()        
 
     def handle_event(self, ev: Event):
         self.current_event = ev
 
         response = str(self.agent.chat(ev.request))
-        print(response)
+        print(Fore.MAGENTA + str(response) + Style.RESET_ALL)
 
         # if they're sending us elsewhere we're done here
         if self.context.data["redirecting"]:

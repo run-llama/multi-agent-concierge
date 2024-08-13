@@ -1,5 +1,11 @@
 # Multi-agent concierge system
 
+This repo contains two implementations of the multi-agent concierge system described below. The first, `demo.py`, is built using vanilla Python. The second, `workflows.py`, uses LlamaIndex's Workflows abstraction to control flow.
+
+The resulting workflow is rendered automatically using the built-in `draw_all_possible_flows()` and looks like this:
+
+![architecture](./workflow.png)
+
 ## Why build this?
 
 Interactive chat bots are by this point a familiar solution to customer service, and agents are a frequent component of chat bot implementations. They provide memory, introspection, tool use and other features necessary for a competent bot.
