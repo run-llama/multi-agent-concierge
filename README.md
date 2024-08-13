@@ -6,6 +6,8 @@ The resulting workflow is rendered automatically using the built-in `draw_all_po
 
 ![architecture](./workflow.png)
 
+A walkthrough of the Workflows version of this code is available [on YouTube](https://www.youtube.com/watch?v=DqiIDMxuoKA).
+
 ## Why build this?
 
 Interactive chat bots are by this point a familiar solution to customer service, and agents are a frequent component of chat bot implementations. They provide memory, introspection, tool use and other features necessary for a competent bot.
