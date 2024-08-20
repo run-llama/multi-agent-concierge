@@ -12,6 +12,8 @@ llama-index-llms-openai = "^0.1.25"
 python-dotenv = "^1.0.1"
 colorama = "^0.4.6"
 llama-index-llms-anthropic = "^0.1.17"
+llama-index-agent-openai = "^0.2.9"
+llama-index-utils-workflow = "^0.1.1"
 
 
 [build-system]
