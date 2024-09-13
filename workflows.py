@@ -22,9 +22,9 @@ class InitializeEvent(Event):
     pass
 
 class ConciergeEvent(Event):
-    request: Optional[str]
-    just_completed: Optional[str]
-    need_help: Optional[bool]
+    request: Optional[str] = None
+    just_completed: Optional[str] = None
+    need_help: Optional[bool] = None
 
 class OrchestratorEvent(Event):
     request: str
