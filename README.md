@@ -1,12 +1,14 @@
 # Multi-agent concierge system
 
-This repo contains two implementations of the multi-agent concierge system described below. The first, `demo.py`, is built using vanilla Python. The second, `workflows.py`, uses LlamaIndex's Workflows abstraction to control flow.
+This repo contains an implementation of a multi-agent concierge system using LlamaIndex's Workflows abstraction. Using this example, you can plug in your own agents and tools to build your own multi-agent system, or hack and extend the underlying code to suit your needs.
+
+In this example, agents are represented by a set name, description, set of tools, and system prompt, which all define how the agent acts and how that agent is selected.
+
+In addition, all agent tools have access to the global state in the workflow, which allows agents to coordinate with each other and share information easily. Tools can also be marked as requiring human confirmation, which will cause the system to ask the user to confirm the tool call before it's sent.
 
 The resulting workflow is rendered automatically using the built-in `draw_all_possible_flows()` and looks like this:
 
 ![architecture](./workflow.png)
-
-A walkthrough of the Workflows version of this code is available [on YouTube](https://www.youtube.com/watch?v=DqiIDMxuoKA).
 
 ## Why build this?
 
@@ -35,210 +37,88 @@ Coming up with a single primary prompt for all of these tasks and sub-tasks woul
 We built a system of agents to complete the above tasks. There are four basic "task" agents:
 * A stock lookup agent (which takes care of sub-tasks like looking up symbols)
 * An authentication agent (which asks for username and password)
-* An account balance agent (which takes care of sub-tasks like selecting an account)
+* An account balance agent (which takes care of sub-tasks like checking the balance of a specific account)
 * A money transfer agent (which takes care of tasks like asking what account to transfer to, and how much)
 
-There are also three "meta" agents:
+A **global state** is used, that keeps track of the user and their current state, shared between all the agents. This state is available in any tool call, using the `FunctionToolWithContext` class.
 
-1. A **concierge agent**: this agent is responsible for interacting with the user when they first arrive, letting them know what sort of tasks are available, and providing feedback when tasks are complete.
-
-2. An **orchestration agent**: this agent never provides output directly to the user. Instead, it looks at what the user is currently trying to accomplish, and responds with the plain-text name of the agent that should handle the task. The code then routes to that agent.
-
-3. A **continuation agent**: it's sometimes necessary to chain agents together to complete a task. For instance, to check your account balance, you need to be authenticated first. The authentication agent doesn't know if you were simply trying to authenticate yourself or if it's part of a chain, and it doesn't need to. When the authentication agent completes, the continuation agent checks chat history to see what the original task was, and if there's more to do, it formulates a new request to the orchestration agent to get you there without further user input.
-
-A **global state** keeps track of the user and their current state, shared between all the agents.
+There is also an **orchestration agent**: this agent will interact with the user when no active speaker is set. It will look at the current user state and list of available agents, and decide which agent to route the user to next.
 
 The flow of the the system looks something like this:
 
-![architecture](./architecture.png)
+![abstract_architecture](./architecture.png)
+
+## Repo Structure
+
+- `main.py` - the main entry point for the application. Sets up the global state and the agent pool, and starts the workflow. See this for a detailed quickstart example of how to use the system.
+- `workflow.py` - the workflow definition, including all the agents and tools. This handles orchestration, routing, and human approval.
+- `utils.py` - additional utility functions for the workflow, mainly to provide the `FunctionToolWithContext` class.
 
 ## The system in action
 
-To get a sense of how this works in practice, here's sample output including helpful debug statements. Output that would be ordinarily shown to the user is <span style="color:magenta">magenta</span>, and user input is shown `as fixed text`.
+To get a sense of how this works in practice, here's sample output during an interaction with the system.
 
-At the beginning of the conversation nothing's happened yet, so you get routed to the concierge:
-
-<blockquote>
-No current speaker, asking orchestration agent to decide
-
-Concierge agent selected
-
-<span style="color:magenta">Hi there! How can I assist you today? Here are some things I can help you with:</span>
-- <span style="color:magenta">Looking up a stock price</span>
-- <span style="color:magenta">Authenticating you</span>
-- <span style="color:magenta">Checking an account balance (requires authentication first)</span>
-- <span style="color:magenta">Transferring money between accounts (requires authentication and checking an account balance first)</span>
-
-<span style="color:magenta">What would you like to do?</span>
-```
-> Transfer money
-```
-</blockquote>
-
-The "transfer money" task requires authentication. The orchestration agent checks if you're authenticated while deciding how to route you (it does this twice for some reason, it's a demo!):
+At the beginning of the conversation, no active speaker is set, so you get routed to the concierge orchestration agent:
 
 <blockquote>
-No current speaker, asking orchestration agent to decide
-
-Orchestrator is checking if authenticated
-
-Orchestrator is checking if authenticated
-
-Auth agent selected
+<span style="color:blue">AGENT >>  Hello! How can I assist you today?</span>
+<span style="color:white">USER >> I'd like to make a transfer</span>
+<span style="color:green">SYSTEM >>  Transferring to agent Authentication Agent</span>
+<span style="color:blue">AGENT >>  To assist with your transfer, I'll need to authenticate you first. Could you please provide your username and password?</span>
 </blockquote>
 
-It correctly determines you're not authenticated, so it routes you to the authentication agent:
+Here, we see the orchestration agent routing to the authentication agent, and then asking for a username and password. This is because the global state does not yet have a username or password.
 
 <blockquote>
-<span style="color:magenta">To transfer money, I need to authenticate you first. Could you please provide your username and password?</span>
-
-```
-> seldo
-```
+<span style="color:white">USER >> username=logan password=abc123</span>
+<span style="color:green">SYSTEM >>  Recording username</span>
+<span style="color:green">SYSTEM >>  Tool store_username called with {'username': 'logan'} returned None</span>
+<span style="color:green">SYSTEM >>  Logging in user logan</span>
+<span style="color:green">SYSTEM >>  Tool login called with {'password': 'abc123'} returned Logged in user logan with session token 1234567890. They have an account with id 123 and a balance of $1000.</span>
+<span style="color:green">SYSTEM >>  Agent is requesting a transfer. Please hold.</span>
+<span style="color:green">SYSTEM >>  Transferring to agent Transfer Money Agent</span>
+<span style="color:blue">AGENT >>  You are now authenticated. Please provide the account ID you wish to transfer money to and the amount you'd like to transfer.</span>
 </blockquote>
 
-This is a fun part: you've provided input, but it's not sufficient to complete the task (you didn't give a password). So when the flow goes back to the orchestration agent, the global state indicates that the "authenticate" agent is already running and hasn't completed yet, so it routes back to the authentication agent, and does that again for the password:
+Lots of things are happening here:
+- the username and password are stored in the global state
+- the authentication agent logs in the user and gathers some account information
+- the orchestration agent routes to the transfer money agent
+- the transfer money agent requests a transfer amount and account ID
 
 <blockquote>
-There's already a speaker: authenticate
-
-Auth agent selected
-
-Recording username
-
-<span style="color:magenta">Thank you! Now, could you please provide your password?</span>
-
-```
-> monkey
-```
-
-There's already a speaker: authenticate
-
-Auth agent selected
-
-Logging in seldo
-
-Checking if authenticated
-
-Authentication is complete
+<span style="color:white">USER >> transfer $123 to account #321</span>
+<span style="color:green">SYSTEM >> I need approval for the following tool call:</span>
+<span style="color:green">transfer_money</span>
+<span style="color:green">{'from_account_id': '123', 'to_account_id': '321', 'amount': 123}</span>
+<span style="color:white">Do you approve? (y/n): y</span>
+<span style="color:green">SYSTEM >>  Transferring 123 from 123 to account 321</span>
+<span style="color:green">SYSTEM >>  Tool transfer_money called with {'from_account_id': '123', 'to_account_id': '321', 'amount': 123} returned Transferred 123 to account 321</span>
+<span style="color:blue">AGENT >>  The transfer of $123 to account #321 has been successfully completed. Is there anything else I can help you with?</span>
 </blockquote>
 
-Now the auth agent has called a `done()` function that indicates to the global state that it has completed its task. So the flow now goes to the continuation agent, which looks at the chat history and sees that the user was trying to transfer money. So it generates a prompt, as if spoken by the user, and sends that to the orchestration agent:
+Since the transfer tool requires human approval, the orchestration agent asks the user if they approve! If they do, the transfer proceeds.
 
 <blockquote>
-<span style="color:magenta">You have been successfully authenticated. Another agent will assist you with transferring money.</span>
-
-Asking the continuation agent to decide what to do next
-
-Continuation agent said "I would like to transfer money."
-
-No current speaker, asking orchestration agent to decide
-
-Orchestrator checking if account has a balance
-
-Orchestrator checking if account has a balance
-
-Account balance agent selected
+<span style="color:white">USER >> I need to lookup the value of a stock</span>
+<span style="color:green">SYSTEM >>  Agent is requesting a transfer. Please hold.</span>
+<span style="color:green">SYSTEM >>  Transferring to agent Stock Lookup Agent</span>
+<span style="color:blue">AGENT >>  Sure, I can help with that. Please provide the name of the company whose stock value you want to look up.</span>
+<span style="color:white">USER >> AMD</span>
+<span style="color:green">SYSTEM >>  Searching for stock symbol</span>
+<span style="color:green">SYSTEM >>  Tool search_for_stock_symbol called with {'company_name': 'AMD'} returned AMD</span>
+<span style="color:green">SYSTEM >>  Looking up stock price for AMD</span>
+<span style="color:green">SYSTEM >>  Tool lookup_stock_price called with {'stock_symbol': 'AMD'} returned Symbol AMD is currently trading at $100.00</span>
+<span style="color:blue">AGENT >>  The current stock price for AMD is $100.00. Is there anything else you would like to know?</span>
 </blockquote>
 
-Now you're authenticated, but you haven't checked your balance yet, which the orchestration agent knows is necessary for transferring money. So it routes you to the account balance agent (after checking twice for some reason):
+Here, we ask for a stock lookup. The money transfer agent is currently active, so it requests a transfer first, which is then handled by the orchestration agent, and finally the stock lookup agent activated and used to look up the stock price.
 
 <blockquote>
-
-<span style="color:magenta">Before you can transfer money, you need to check your account balance. Let's start by looking up your account balance. Could you please provide the name of the account you're interested in?</span>
-
-```
-> Checking
-```
-
-There's already a speaker: account_balance
-
-Account balance agent selected
-
-Looking up account ID for Checking
-
-Looking up account balance for 1234567890
-
-Account balance lookup is complete
-
-<span style="color:magenta">Your Checking account has a balance of $1000. Another agent will assist you with transferring money.</span>
-
-Asking the continuation agent to decide what to do next
-
-Continuation agent said "I would like to transfer money."
-
-No current speaker, asking orchestration agent to decide
-
-Transfer money agent selected
+<span style="color:white">USER >> bye</span>
 </blockquote>
 
-The account balance agent asks you which account, uses a tool to get the ID for that account, and then marks itself as done. The continuation agent kicks in again and sees that you still haven't completed your original task of transferring money, so it prompts the orchestrator agent again. Unfortunately the orchestrator gets a little confused, and loops twice before finally routing you to the transfer money agent:
-
-<blockquote>
-Money transfer is complete
-
-<span style="color:magenta">Another agent will assist you with transferring money.</span>
-
-Asking the continuation agent to decide what to do next
-
-Continuation agent said "I would like to transfer money."
-
-No current speaker, asking orchestration agent to decide
-
-Transfer money agent selected
-
-Money transfer is complete
-
-<span style="color:magenta">Another agent will assist you with transferring money.</span>
-
-Asking the continuation agent to decide what to do next
-
-Continuation agent said "I would like to transfer money."
-
-No current speaker, asking orchestration agent to decide
-
-Orchestrator checking if account has a balance
-
-Transfer money agent selected
-
-<span style="color:magenta">You have already checked your account balance. Please provide the following details to proceed with the money transfer:</span>
-
-<span style="color:magenta">1. The account ID to which you want to transfer the money.</span>
-
-<span style="color:magenta">2. The amount you want to transfer.</span>
-
-```
-> To account ID 1234324
-```
-
-There's already a speaker: transfer_money
-
-Transfer money agent selected
-
-How much would you like to transfer to account ID 1234324?
-
-```
-> 500
-```
-
-There's already a speaker: transfer_money
-
-Transfer money agent selected
-
-Checking if balance is sufficient
-
-Transferring 500 from 1234567890 account 1234324
-
-Money transfer is complete
-
-<span style="color:magenta">The transfer of $500 to account ID 1234324 has been successfully completed. If you need any further assistance, feel free to ask!<span style="color:magenta">
-
-Asking the continuation agent to decide what to do next
-
-Continuation agent said no_further_tasks
-</blockquote>
-
-We've reached the end of the task! The continuation agent sees that there are no further tasks, and routes you back to the concierge.
+At any time, the user can end the conversation by saying "bye"/"quit","exit".
 
 ## What's next
 

@@ -1,0 +1,73 @@
+---
+default_language_version:
+  python: python3
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: check-byte-order-marker
+      - id: check-merge-conflict
+      - id: check-symlinks
+      - id: check-toml
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+      - id: trailing-whitespace
+
+  - repo: https://github.com/charliermarsh/ruff-pre-commit
+    rev: v0.1.5
+
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+        exclude: ".*poetry.lock"
+      - id: ruff-format
+
+  #- repo: https://github.com/pre-commit/mirrors-mypy
+  #  rev: v1.11.2
+  #  hooks:
+  #    - id: mypy
+  #      additional_dependencies:
+  #        [
+  #          "llama-index-core",
+  #          "types-Deprecated",
+  #          "types-PyYAML",
+  #          "types-aiobotocore",
+  #          "types-protobuf==4.24.0.4",
+  #          "types-redis",
+  #          "types-requests",
+  #          "types-setuptools",
+  #        ]
+  #      args:
+  #        [
+  #          --disallow-untyped-defs,
+  #          --ignore-missing-imports,
+  #          --python-version=3.11,
+  #        ]
+
+  - repo: https://github.com/adamchainz/blacken-docs
+    rev: 1.16.0
+    hooks:
+      - id: blacken-docs
+        name: black-docs-text
+        alias: black
+        types_or: [rst, markdown, tex]
+        additional_dependencies: [black==23.10.1]
+        # Using PEP 8's line length in docs prevents excess left/right scrolling
+        args: [--line-length=79]
+
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.3.0
+    hooks:
+      - id: codespell
+        additional_dependencies: [tomli]
+        exclude: ".*poetry.lock|.*html"
+
+  - repo: https://github.com/pappasam/toml-sort
+    rev: v0.23.1
+    hooks:
+      - id: toml-sort-fix
+        exclude: ".*poetry.lock"

@@ -1,3 +1,5 @@
 poc.py
 .env
 lib
+.mypy_cache
+.ruff_cache

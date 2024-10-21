@@ -1,21 +1,21 @@
-[tool.poetry]
-name = "mutli-agent-concierge"
-version = "0.1.0"
-description = ""
-authors = ["Laurie Voss <github@seldo.com>"]
-readme = "README.md"
-
-[tool.poetry.dependencies]
-python = "^3.11"
-llama-index-core = "^0.10.52.post2"
-llama-index-llms-openai = "^0.1.25"
-python-dotenv = "^1.0.1"
-colorama = "^0.4.6"
-llama-index-llms-anthropic = "^0.1.17"
-llama-index-agent-openai = "^0.2.9"
-llama-index-utils-workflow = "^0.1.1"
-
-
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "mutli-agent-concierge"
+version = "0.2.0"
+description = ""
+authors = ["Laurie Voss <github@seldo.com>"]
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.11"
+llama-index-core = "^0.11.19"
+llama-index-llms-openai = "^0.2.0"
+python-dotenv = "^1.0.1"
+colorama = "^0.4.6"
+llama-index-llms-anthropic = "^0.2.0"
+llama-index-agent-openai = "^0.3.0"
+llama-index-utils-workflow = "^0.2.2"

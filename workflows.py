@@ -1,465 +1,734 @@
-import dotenv
-dotenv.load_dotenv()
+import asyncio
+from inspect import signature
+from pydantic import BaseModel, ConfigDict, Field, create_model
+from pydantic.fields import FieldInfo
+from typing import Any, Awaitable, Optional, Callable, Type, List, Tuple, Union, cast
 
-from llama_index.core.workflow import (
-    step, 
-    Context, 
-    Workflow, 
-    Event, 
-    StartEvent, 
-    StopEvent
+from llama_index.core.llms import ChatMessage, LLM
+from llama_index.core.memory import ChatMemoryBuffer
+from llama_index.core.program.function_program import get_function_tool
+from llama_index.core.tools import (
+    BaseTool,
+    ToolSelection,
+    FunctionTool,
+    ToolOutput,
+    ToolMetadata,
 )
+from llama_index.core.workflow import (
+    Event,
+    StartEvent,
+    StopEvent,
+    Workflow,
+    step,
+    Context,
+)
+from llama_index.core.workflow.events import InputRequiredEvent, HumanResponseEvent
 from llama_index.llms.openai import OpenAI
-from llama_index.llms.anthropic import Anthropic
-from llama_index.core.agent import FunctionCallingAgentWorker
-from llama_index.core.tools import FunctionTool
-from enum import Enum
-from typing import Optional, List, Callable
-from llama_index.utils.workflow import draw_all_possible_flows
-from colorama import Fore, Back, Style
 
-class InitializeEvent(Event):
+AsyncCallable = Callable[..., Awaitable[Any]]
+
+
+def create_schema_from_function(
+    name: str,
+    func: Union[Callable[..., Any], Callable[..., Awaitable[Any]]],
+    additional_fields: Optional[
+        List[Union[Tuple[str, Type, Any], Tuple[str, Type]]]
+    ] = None,
+) -> Type[BaseModel]:
+    """Create schema from function."""
+    fields = {}
+    params = signature(func).parameters
+    for param_name in params:
+        # TODO: Very hacky way to remove the ctx parameter from the signature
+        if param_name == "ctx":
+            continue
+
+        param_type = params[param_name].annotation
+        param_default = params[param_name].default
+
+        if param_type is params[param_name].empty:
+            param_type = Any
+
+        if param_default is params[param_name].empty:
+            # Required field
+            fields[param_name] = (param_type, FieldInfo())
+        elif isinstance(param_default, FieldInfo):
+            # Field with pydantic.Field as default value
+            fields[param_name] = (param_type, param_default)
+        else:
+            fields[param_name] = (param_type, FieldInfo(default=param_default))
+
+    additional_fields = additional_fields or []
+    for field_info in additional_fields:
+        if len(field_info) == 3:
+            field_info = cast(Tuple[str, Type, Any], field_info)
+            field_name, field_type, field_default = field_info
+            fields[field_name] = (field_type, FieldInfo(default=field_default))
+        elif len(field_info) == 2:
+            # Required field has no default value
+            field_info = cast(Tuple[str, Type], field_info)
+            field_name, field_type = field_info
+            fields[field_name] = (field_type, FieldInfo())
+        else:
+            raise ValueError(
+                f"Invalid additional field info: {field_info}. "
+                "Must be a tuple of length 2 or 3."
+            )
+
+    return create_model(name, **fields)  # type: ignore
+
+
+class FunctionToolWithContext(FunctionTool):
+    """
+    A function tool that also includes passing in workflow context.
+
+    Only overrides the call methods to include the context.
+    """
+
+    @classmethod
+    def from_defaults(
+        cls,
+        fn: Optional[Callable[..., Any]] = None,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        return_direct: bool = False,
+        fn_schema: Optional[Type[BaseModel]] = None,
+        async_fn: Optional[AsyncCallable] = None,
+        tool_metadata: Optional[ToolMetadata] = None,
+    ) -> "FunctionTool":
+        if tool_metadata is None:
+            fn_to_parse = fn or async_fn
+            assert fn_to_parse is not None, "fn or async_fn must be provided."
+            name = name or fn_to_parse.__name__
+            docstring = fn_to_parse.__doc__
+
+            # TODO: Very hacky way to remove the ctx parameter from the signature
+            signature_str = str(signature(fn_to_parse))
+            signature_str = signature_str.replace(
+                "ctx: llama_index.core.workflow.context.Context, ", ""
+            )
+            description = description or f"{name}{signature_str}\n{docstring}"
+            if fn_schema is None:
+                fn_schema = create_schema_from_function(
+                    f"{name}", fn_to_parse, additional_fields=None
+                )
+            tool_metadata = ToolMetadata(
+                name=name,
+                description=description,
+                fn_schema=fn_schema,
+                return_direct=return_direct,
+            )
+        return cls(fn=fn, metadata=tool_metadata, async_fn=async_fn)
+
+    def call(self, ctx: Context, *args: Any, **kwargs: Any) -> ToolOutput:
+        """Call."""
+        tool_output = self._fn(ctx, *args, **kwargs)
+        return ToolOutput(
+            content=str(tool_output),
+            tool_name=self.metadata.name,
+            raw_input={"args": args, "kwargs": kwargs},
+            raw_output=tool_output,
+        )
+
+    async def acall(self, ctx: Context, *args: Any, **kwargs: Any) -> ToolOutput:
+        """Call."""
+        tool_output = await self._async_fn(ctx, *args, **kwargs)
+        return ToolOutput(
+            content=str(tool_output),
+            tool_name=self.metadata.name,
+            raw_input={"args": args, "kwargs": kwargs},
+            raw_output=tool_output,
+        )
+
+
+# ---- Pydantic models for config/llm prediction ----
+
+
+class AgentConfig(BaseModel):
+    """Used to configure an agent."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    name: str
+    description: str
+    system_prompt: str | None = None
+    tools: list[BaseTool] | None = None
+    tools_requiring_human_confirmation: list[str] = Field(default_factory=list)
+
+
+class TransferToAgent(BaseModel):
+    """Used to transfer the user to a specific agent."""
+
+    agent_name: str
+
+
+class RequestTransfer(BaseModel):
+    """Used to signal that either you don't have the tools to complete the task, or you've finished your task and want to transfer to another agent."""
+
     pass
 
-class ConciergeEvent(Event):
-    request: Optional[str]
-    just_completed: Optional[str]
-    need_help: Optional[bool]
+
+# ---- Events used to orchestrate the workflow ----
+
+
+class ActiveSpeakerEvent(Event):
+    pass
+
 
 class OrchestratorEvent(Event):
-    request: str
+    pass
 
-class StockLookupEvent(Event):
-    request: str
 
-class AuthenticateEvent(Event):
-    request: str
+class ToolCallEvent(Event):
+    tool_call: ToolSelection
+    tools: list[BaseTool]
 
-class AccountBalanceEvent(Event):
-    request: str
 
-class TransferMoneyEvent(Event):
-    request: str
+class ToolCallResultEvent(Event):
+    chat_message: ChatMessage
 
-class ConciergeWorkflow(Workflow):
 
-    @step(pass_context=True)
-    async def initialize(self, ctx: Context, ev: InitializeEvent) -> ConciergeEvent:
-        ctx.data["user"] = {
-            "username": None,
-            "session_token": None,
-            "account_id": None,
-            "account_balance": None,
-        }
-        ctx.data["success"] = None
-        ctx.data["redirecting"] = None
-        ctx.data["overall_request"] = None
+class ToolRequestEvent(InputRequiredEvent):
+    tool_name: str
+    tool_id: str
+    tool_kwargs: dict
 
-        ctx.data["llm"] = OpenAI(model="gpt-4o",temperature=0.4)
-        #ctx.data["llm"] = Anthropic(model="claude-3-5-sonnet-20240620",temperature=0.4)
-        #ctx.data["llm"] = Anthropic(model="claude-3-opus-20240229",temperature=0.4)
 
-        return ConciergeEvent()
-  
-    @step(pass_context=True)
-    async def concierge(self, ctx: Context, ev: ConciergeEvent | StartEvent) -> InitializeEvent | StopEvent | OrchestratorEvent:
-        # initialize user if not already done
-        if ("user" not in ctx.data):
-            return InitializeEvent()
-        
-        # initialize concierge if not already done
-        if ("concierge" not in ctx.data):
-            system_prompt = (f"""
-                You are a helpful assistant that is helping a user navigate a financial system.
-                Your job is to ask the user questions to figure out what they want to do, and give them the available things they can do.
-                That includes
-                * looking up a stock price            
-                * authenticating the user
-                * checking an account balance
-                * transferring money between accounts
-                You should start by listing the things you can help them do.            
-            """)
+class ToolApprovedEvent(HumanResponseEvent):
+    tool_name: str
+    tool_id: str
+    tool_kwargs: dict
+    approved: bool
+    response: str | None = None
 
-            agent_worker = FunctionCallingAgentWorker.from_tools(
-                tools=[],
-                llm=ctx.data["llm"],
-                allow_parallel_tool_calls=False,
-                system_prompt=system_prompt
-            )
-            ctx.data["concierge"] = agent_worker.as_agent()        
 
-        concierge = ctx.data["concierge"]
-        if ctx.data["overall_request"] is not None:
-            print("There's an overall request in progress, it's ", ctx.data["overall_request"])
-            last_request = ctx.data["overall_request"]
-            ctx.data["overall_request"] = None
-            return OrchestratorEvent(request=last_request)
-        elif (ev.just_completed is not None):
-            response = concierge.chat(f"FYI, the user has just completed the task: {ev.just_completed}")
-        elif (ev.need_help):
-            print("The previous process needs help with ", ev.request)
-            return OrchestratorEvent(request=ev.request)
-        else:
-            # first time experience
-            response = concierge.chat("Hello!")
+class ProgressEvent(Event):
+    msg: str
 
-        print(Fore.MAGENTA + str(response) + Style.RESET_ALL)
-        user_msg_str = input("> ").strip()
-        return OrchestratorEvent(request=user_msg_str)
-    
-    @step(pass_context=True)
-    async def orchestrator(self, ctx: Context, ev: OrchestratorEvent) -> ConciergeEvent | StockLookupEvent | AuthenticateEvent | AccountBalanceEvent | TransferMoneyEvent | StopEvent:
 
-        print(f"Orchestrator received request: {ev.request}")
+# ---- Workflow ----
 
-        def emit_stock_lookup() -> bool:
-            """Call this if the user wants to look up a stock price."""      
-            print("__emitted: stock lookup")      
-            self.send_event(StockLookupEvent(request=ev.request))
-            return True
 
-        def emit_authenticate() -> bool:
-            """Call this if the user wants to authenticate"""
-            print("__emitted: authenticate")
-            self.send_event(AuthenticateEvent(request=ev.request))
-            return True
-
-        def emit_account_balance() -> bool:
-            """Call this if the user wants to check an account balance."""
-            print("__emitted: account balance")
-            self.send_event(AccountBalanceEvent(request=ev.request))
-            return True
-
-        def emit_transfer_money() -> bool:
-            """Call this if the user wants to transfer money."""
-            print("__emitted: transfer money")
-            self.send_event(TransferMoneyEvent(request=ev.request))
-            return True
-
-        def emit_concierge() -> bool:
-            """Call this if the user wants to do something else or you can't figure out what they want to do."""
-            print("__emitted: concierge")
-            self.send_event(ConciergeEvent(request=ev.request))
-            return True
-
-        def emit_stop() -> bool:
-            """Call this if the user wants to stop or exit the system."""
-            print("__emitted: stop")
-            self.send_event(StopEvent())
-            return True
-
-        tools = [
-            FunctionTool.from_defaults(fn=emit_stock_lookup),
-            FunctionTool.from_defaults(fn=emit_authenticate),
-            FunctionTool.from_defaults(fn=emit_account_balance),
-            FunctionTool.from_defaults(fn=emit_transfer_money),
-            FunctionTool.from_defaults(fn=emit_concierge),
-            FunctionTool.from_defaults(fn=emit_stop)
-        ]
-        
-        system_prompt = (f"""
-            You are on orchestration agent.
-            Your job is to decide which agent to run based on the current state of the user and what they've asked to do. 
-            You run an agent by calling the appropriate tool for that agent.
-            You do not need to call more than one tool.
-            You do not need to figure out dependencies between agents; the agents will handle that themselves.
-                            
-            If you did not call any tools, return the string "FAILED" without quotes and nothing else.
-        """)
-
-        agent_worker = FunctionCallingAgentWorker.from_tools(
-            tools=tools,
-            llm=ctx.data["llm"],
-            allow_parallel_tool_calls=False,
-            system_prompt=system_prompt
-        )
-        ctx.data["orchestrator"] = agent_worker.as_agent()        
-        
-        orchestrator = ctx.data["orchestrator"]
-        response = str(orchestrator.chat(ev.request))
-
-        if response == "FAILED":
-            print("Orchestration agent failed to return a valid speaker; try again")
-            return OrchestratorEvent(request=ev.request)
-        
-    @step(pass_context=True)
-    async def stock_lookup(self, ctx: Context, ev: StockLookupEvent) -> ConciergeEvent:
-
-        print(f"Stock lookup received request: {ev.request}")
-
-        if ("stock_lookup_agent" not in ctx.data):
-            def lookup_stock_price(stock_symbol: str) -> str:
-                """Useful for looking up a stock price."""
-                print(f"Looking up stock price for {stock_symbol}")
-                return f"Symbol {stock_symbol} is currently trading at $100.00"
-            
-            def search_for_stock_symbol(str: str) -> str:
-                """Useful for searching for a stock symbol given a free-form company name."""
-                print("Searching for stock symbol")
-                return str.upper()
-            
-            system_prompt = (f"""
-                You are a helpful assistant that is looking up stock prices.
-                The user may not know the stock symbol of the company they're interested in,
-                so you can help them look it up by the name of the company.
-                You can only look up stock symbols given to you by the search_for_stock_symbol tool, don't make them up. Trust the output of the search_for_stock_symbol tool even if it doesn't make sense to you.
-                Once you have retrieved a stock price, you *must* call the tool named "done" to signal that you are done. Do this before you respond.
-                If the user asks to do anything other than look up a stock symbol or price, call the tool "need_help" to signal some other agent should help.
-            """)
-
-            ctx.data["stock_lookup_agent"] = ConciergeAgent(
-                name="Stock Lookup Agent",
-                parent=self,
-                tools=[lookup_stock_price, search_for_stock_symbol],
-                context=ctx,
-                system_prompt=system_prompt,
-                trigger_event=StockLookupEvent
-            )
-
-        return ctx.data["stock_lookup_agent"].handle_event(ev)
-
-    @step(pass_context=True)
-    async def authenticate(self, ctx: Context, ev: AuthenticateEvent) -> ConciergeEvent:
-
-        if ("authentication_agent" not in ctx.data):
-            def store_username(username: str) -> None:
-                """Adds the username to the user state."""
-                print("Recording username")
-                ctx.data["user"]["username"] = username
-
-            def login(password: str) -> None:
-                """Given a password, logs in and stores a session token in the user state."""
-                print(f"Logging in {ctx.data['user']['username']}")
-                # todo: actually check the password
-                session_token = "output_of_login_function_goes_here"
-                ctx.data["user"]["session_token"] = session_token
-            
-            def is_authenticated() -> bool:
-                """Checks if the user has a session token."""
-                print("Checking if authenticated")
-                if ctx.data["user"]["session_token"] is not None:
-                    return True
-
-            system_prompt = (f"""
-                You are a helpful assistant that is authenticating a user.
-                Your task is to get a valid session token stored in the user state.
-                To do this, the user must supply you with a username and a valid password. You can ask them to supply these.
-                If the user supplies a username and password, call the tool "login" to log them in.
-                Once you've called the login tool successfully, call the tool named "done" to signal that you are done. Do this before you respond.
-                If the user asks to do anything other than authenticate, call the tool "need_help" to signal some other agent should help.
-            """)
-
-            ctx.data["authentication_agent"] = ConciergeAgent(
-                name="Authentication Agent",
-                parent=self,
-                tools=[store_username, login, is_authenticated],
-                context=ctx,
-                system_prompt=system_prompt,
-                trigger_event=AuthenticateEvent
-            )
-
-        return ctx.data["authentication_agent"].handle_event(ev)
-    
-    @step(pass_context=True)
-    def account_balance(self, ctx: Context, ev: AccountBalanceEvent) -> AuthenticateEvent | ConciergeEvent:
-        
-        if("account_balance_agent" not in ctx.data):
-            def get_account_id(account_name: str) -> str:
-                """Useful for looking up an account ID."""
-                print(f"Looking up account ID for {account_name}")
-                account_id = "1234567890"
-                ctx.data["user"]["account_id"] = account_id
-                return f"Account id is {account_id}"
-            
-            def get_account_balance(account_id: str) -> str:
-                """Useful for looking up an account balance."""
-                print(f"Looking up account balance for {account_id}")
-                ctx.data["user"]["account_balance"] = 1000
-                return f"Account {account_id} has a balance of ${ctx.data['user']['account_balance']}"
-            
-            def is_authenticated() -> bool:
-                """Checks if the user is authenticated."""
-                print("Account balance agent is checking if authenticated")
-                if ctx.data["user"]["session_token"] is not None:
-                    return True
-                else:
-                    return False
-                
-            def authenticate() -> None:
-                """Call this if the user needs to authenticate."""
-                print("Account balance agent is authenticating")
-                ctx.data["redirecting"] = True
-                ctx.data["overall_request"] = "Check account balance"
-                self.send_event(AuthenticateEvent(request="Authenticate"))
-
-            system_prompt = (f"""
-                You are a helpful assistant that is looking up account balances.
-                The user may not know the account ID of the account they're interested in,
-                so you can help them look it up by the name of the account.
-                The user can only do this if they are authenticated, which you can check with the is_authenticated tool.
-                If they aren't authenticated, call the "authenticate" tool to trigger the start of the authentication process; tell them you have done this.
-                If they're trying to transfer money, they have to check their account balance first, which you can help with.
-                Once you have supplied an account balance, you must call the tool named "done" to signal that you are done. Do this before you respond.
-                If the user asks to do anything other than look up an account balance, call the tool "need_help" to signal some other agent should help.
-            """)
-
-            ctx.data["account_balance_agent"] = ConciergeAgent(
-                name="Account Balance Agent",
-                parent=self,
-                tools=[get_account_id, get_account_balance, is_authenticated, authenticate],
-                context=ctx,
-                system_prompt=system_prompt,
-                trigger_event=AccountBalanceEvent
-            )
-
-        # TODO: this could programmatically check for authentication and emit an event
-        # but then the agent wouldn't say anything helpful about what's going on.
-
-        return ctx.data["account_balance_agent"].handle_event(ev)
-    
-    @step(pass_context=True)
-    def transfer_money(self, ctx: Context, ev: TransferMoneyEvent) -> AuthenticateEvent | AccountBalanceEvent | ConciergeEvent:
-
-        if("transfer_money_agent" not in ctx.data):
-            def transfer_money(from_account_id: str, to_account_id: str, amount: int) -> None:
-                """Useful for transferring money between accounts."""
-                print(f"Transferring {amount} from {from_account_id} account {to_account_id}")
-                return f"Transferred {amount} to account {to_account_id}"
-            
-            def balance_sufficient(account_id: str, amount: int) -> bool:
-                """Useful for checking if an account has enough money to transfer."""
-                # todo: actually check they've selected the right account ID
-                print("Checking if balance is sufficient")
-                if ctx.data["user"]['account_balance'] >= amount:
-                    return True
-                
-            def has_balance() -> bool:
-                """Useful for checking if an account has a balance."""
-                print("Checking if account has a balance")
-                if ctx.data["user"]["account_balance"] is not None and ctx.data["user"]["account_balance"] > 0:
-                    print("It does", ctx.data["user"]["account_balance"])
-                    return True
-                else:
-                    return False
-            
-            def is_authenticated() -> bool:
-                """Checks if the user has a session token."""
-                print("Transfer money agent is checking if authenticated")
-                if ctx.data["user"]["session_token"] is not None:
-                    return True
-                else:
-                    return False
-                
-            def authenticate() -> None:
-                """Call this if the user needs to authenticate."""
-                print("Account balance agent is authenticating")
-                ctx.data["redirecting"] = True
-                ctx.data["overall_request"] = "Transfer money"
-                self.send_event(AuthenticateEvent(request="Authenticate"))
-
-            def check_balance() -> None:
-                """Call this if the user needs to check their account balance."""
-                print("Transfer money agent is checking balance")
-                ctx.data["redirecting"] = True
-                ctx.data["overall_request"] = "Transfer money"
-                self.send_event(AccountBalanceEvent(request="Check balance"))
-            
-            system_prompt = (f"""
-                You are a helpful assistant that transfers money between accounts.
-                The user can only do this if they are authenticated, which you can check with the is_authenticated tool.
-                If they aren't authenticated, tell them to authenticate first.
-                The user must also have looked up their account balance already, which you can check with the has_balance tool.
-                If they haven't already, tell them to look up their account balance first.
-                Once you have transferred the money, you can call the tool named "done" to signal that you are done. Do this before you respond.
-                If the user asks to do anything other than transfer money, call the tool "done" to signal some other agent should help.
-            """)
-
-            ctx.data["transfer_money_agent"] = ConciergeAgent(
-                name="Transfer Money Agent",
-                parent=self,
-                tools=[transfer_money, balance_sufficient, has_balance, is_authenticated, authenticate, check_balance],
-                context=ctx,
-                system_prompt=system_prompt,
-                trigger_event=TransferMoneyEvent
-            )
-
-        return ctx.data["transfer_money_agent"].handle_event(ev)
-
-class ConciergeAgent():
-    name: str
-    parent: Workflow
-    tools: list[FunctionTool]
-    system_prompt: str
-    context: Context
-    current_event: Event
-    trigger_event: Event
-
-    def __init__(
-            self,
-            parent: Workflow,
-            tools: List[Callable], 
-            system_prompt: str, 
-            trigger_event: Event,
-            context: Context,
-            name: str,
+class ConciergeAgent(Workflow):
+    @step
+    async def setup(
+        self, ctx: Context, ev: StartEvent
+    ) -> ActiveSpeakerEvent | OrchestratorEvent:
+        """Sets up the workflow, validates inputs, and stores them in the context."""
+        active_speaker = await ctx.get("active_speaker", default="")
+        user_msg = ev.get("user_msg")
+        agent_configs = ev.get("agent_configs", default=[])
+        llm: LLM = ev.get("llm", default=OpenAI(model="gpt-4o", temperature=0.3))
+        chat_history = ev.get("chat_history", default=[])
+        initial_state = ev.get("initial_state", default={})
+        if (
+            user_msg is None
+            or agent_configs is None
+            or llm is None
+            or chat_history is None
         ):
-        self.name = name
-        self.parent = parent
-        self.context = context
-        self.system_prompt = system_prompt
-        self.context.data["redirecting"] = False
-        self.trigger_event = trigger_event
+            raise ValueError(
+                "User message, agent configs, llm, and chat_history are required!"
+            )
 
-        # set up the tools including the ones everybody gets
-        def done() -> None:
-            """When you complete your task, call this tool."""
-            print(f"{self.name} is complete")
-            self.context.data["redirecting"] = True
-            parent.send_event(ConciergeEvent(just_completed=self.name))
+        if not llm.metadata.is_function_calling_model:
+            raise ValueError("LLM must be a function calling model!")
 
-        def need_help() -> None:
-            """If the user asks to do something you don't know how to do, call this."""
-            print(f"{self.name} needs help")
-            self.context.data["redirecting"] = True
-            parent.send_event(ConciergeEvent(request=self.current_event.request,need_help=True))
+        # store the agent configs in the context
+        agent_configs_dict = {ac.name: ac for ac in agent_configs}
+        await ctx.set("agent_configs", agent_configs_dict)
+        await ctx.set("llm", llm)
 
-        self.tools = [
-            FunctionTool.from_defaults(fn=done),
-            FunctionTool.from_defaults(fn=need_help)
-        ]
-        for t in tools:
-            self.tools.append(FunctionTool.from_defaults(fn=t))
+        chat_history.append(ChatMessage(role="user", content=user_msg))
+        await ctx.set("chat_history", chat_history)
 
-        agent_worker = FunctionCallingAgentWorker.from_tools(
-            self.tools,
-            llm=self.context.data["llm"],
-            allow_parallel_tool_calls=False,
-            system_prompt=self.system_prompt
+        await ctx.set("user_state", initial_state)
+
+        # if there is an active speaker, we need to transfer forward the user to them
+        if active_speaker:
+            return ActiveSpeakerEvent()
+
+        # otherwise, we need to decide who the next active speaker is
+        return OrchestratorEvent(user_msg=user_msg)
+
+    @step
+    async def speak_with_sub_agent(
+        self, ctx: Context, ev: ActiveSpeakerEvent
+    ) -> ToolCallEvent | ToolRequestEvent | StopEvent:
+        """Speaks with the active sub-agent and handles tool calls (if any)."""
+        # Setup the agent for the active speaker
+        active_speaker = await ctx.get("active_speaker")
+
+        agent_config: AgentConfig = (await ctx.get("agent_configs"))[active_speaker]
+        chat_history = await ctx.get("chat_history")
+        llm = await ctx.get("llm")
+
+        user_state = await ctx.get("user_state")
+        user_state_str = "\n".join([f"{k}: {v}" for k, v in user_state.items()])
+        system_prompt = (
+            agent_config.system_prompt.strip()
+            + f"\n\nHere is the current user state:\n{user_state_str}"
         )
-        self.agent = agent_worker.as_agent()        
 
-    def handle_event(self, ev: Event):
-        self.current_event = ev
+        llm_input = [ChatMessage(role="system", content=system_prompt)] + chat_history
 
-        response = str(self.agent.chat(ev.request))
-        print(Fore.MAGENTA + str(response) + Style.RESET_ALL)
+        # inject the request transfer tool into the list of tools
+        tools = [get_function_tool(RequestTransfer)] + agent_config.tools
 
-        # if they're sending us elsewhere we're done here
-        if self.context.data["redirecting"]:
-            self.context.data["redirecting"] = False
-            return None
+        response = await llm.achat_with_tools(tools, chat_history=llm_input)
 
-        # otherwise, get some user input and then loop
-        user_msg_str = input("> ").strip()
-        return self.trigger_event(request=user_msg_str)
+        tool_calls: list[ToolSelection] = llm.get_tool_calls_from_response(
+            response, error_on_no_tool_call=False
+        )
+        if len(tool_calls) == 0:
+            chat_history.append(response.message)
+            await ctx.set("chat_history", chat_history)
+            return StopEvent(
+                result={
+                    "response": response.message.content,
+                    "chat_history": chat_history,
+                }
+            )
 
-draw_all_possible_flows(ConciergeWorkflow,filename="concierge_flows.html")
+        await ctx.set("num_tool_calls", len(tool_calls))
+
+        for tool_call in tool_calls:
+            if tool_call.tool_name == "RequestTransfer":
+                await ctx.set("active_speaker", None)
+                ctx.write_event_to_stream(
+                    ProgressEvent(msg="Agent is requesting a transfer. Please hold.")
+                )
+                return OrchestratorEvent()
+            elif tool_call.tool_name in agent_config.tools_requiring_human_confirmation:
+                ctx.write_event_to_stream(
+                    ToolRequestEvent(
+                        prefix=f"Tool {tool_call.tool_name} requires human approval.",
+                        tool_name=tool_call.tool_name,
+                        tool_kwargs=tool_call.tool_kwargs,
+                        tool_id=tool_call.tool_id,
+                    )
+                )
+            else:
+                ctx.send_event(
+                    ToolCallEvent(tool_call=tool_call, tools=agent_config.tools)
+                )
+
+        chat_history.append(response.message)
+        await ctx.set("chat_history", chat_history)
+
+    @step
+    async def handle_tool_approval(
+        self, ctx: Context, ev: ToolApprovedEvent
+    ) -> ToolCallEvent | ToolCallResultEvent:
+        """Handles the approval or rejection of a tool call."""
+        if ev.approved:
+            active_speaker = await ctx.get("active_speaker")
+            agent_config = (await ctx.get("agent_configs"))[active_speaker]
+            return ToolCallEvent(
+                tools=agent_config.tools,
+                tool_call=ToolSelection(
+                    tool_id=ev.tool_id,
+                    tool_name=ev.tool_name,
+                    tool_kwargs=ev.tool_kwargs,
+                ),
+            )
+        else:
+            return ToolCallResultEvent(
+                chat_message=ChatMessage(
+                    role="tool",
+                    content=ev.response
+                    or "The tool call was not approved, likely due to a mistake or preconditions not being met.",
+                )
+            )
+
+    @step(num_workers=4)
+    async def handle_tool_call(
+        self, ctx: Context, ev: ToolCallEvent
+    ) -> ActiveSpeakerEvent:
+        """Handles the execution of a tool call."""
+        tool_call = ev.tool_call
+        tools_by_name = {tool.metadata.get_name(): tool for tool in ev.tools}
+
+        tool_msg = None
+
+        tool = tools_by_name.get(tool_call.tool_name)
+        additional_kwargs = {
+            "tool_call_id": tool_call.tool_id,
+            "name": tool.metadata.get_name(),
+        }
+        if not tool:
+            tool_msg = ChatMessage(
+                role="tool",
+                content=f"Tool {tool_call.tool_name} does not exist",
+                additional_kwargs=additional_kwargs,
+            )
+
+        try:
+            if isinstance(tool, FunctionToolWithContext):
+                tool_output = await tool.acall(ctx, **tool_call.tool_kwargs)
+            else:
+                tool_output = await tool.acall(**tool_call.tool_kwargs)
+
+            tool_msg = ChatMessage(
+                role="tool",
+                content=tool_output.content,
+                additional_kwargs=additional_kwargs,
+            )
+        except Exception as e:
+            tool_msg = ChatMessage(
+                role="tool",
+                content=f"Encountered error in tool call: {e}",
+                additional_kwargs=additional_kwargs,
+            )
+
+        ctx.write_event_to_stream(
+            ProgressEvent(
+                msg=f"Tool {tool_call.tool_name} called with {tool_call.tool_kwargs} returned {tool_msg.content}"
+            )
+        )
+
+        return ToolCallResultEvent(chat_message=tool_msg)
+
+    @step
+    async def aggregate_tool_results(
+        self, ctx: Context, ev: ToolCallResultEvent
+    ) -> ActiveSpeakerEvent:
+        """Collects the results of all tool calls and updates the chat history."""
+        num_tool_calls = await ctx.get("num_tool_calls")
+        results = ctx.collect_events(ev, [ToolCallResultEvent] * num_tool_calls)
+        if not results:
+            return
+
+        chat_history = await ctx.get("chat_history")
+        for result in results:
+            chat_history.append(result.chat_message)
+        await ctx.set("chat_history", chat_history)
+
+        return ActiveSpeakerEvent()
+
+    @step
+    async def orchestrator(
+        self, ctx: Context, ev: OrchestratorEvent
+    ) -> ActiveSpeakerEvent | StopEvent:
+        """Decides which agent to run next, if any."""
+        agent_configs = await ctx.get("agent_configs")
+        chat_history = await ctx.get("chat_history")
+
+        agent_context_str = ""
+        for agent_name, agent_config in agent_configs.items():
+            agent_context_str += f"{agent_name}: {agent_config.description}\n"
+
+        user_state = await ctx.get("user_state")
+        user_state_str = "\n".join([f"{k}: {v}" for k, v in user_state.items()])
+
+        system_prompt = (
+            "You are on orchestration agent.\n"
+            "Your job is to decide which agent to run based on the current state of the user and what they've asked to do.\n"
+            "You do not need to figure out dependencies between agents; the agents will handle that themselves.\n"
+            f"Here the the agents you can choose from:\n{agent_context_str}\n\n"
+            f"Here is the current user state:\n{user_state_str}\n\n"
+            "Please assist the user and transfer them as needed."
+        )
+
+        llm_input = [ChatMessage(role="system", content=system_prompt)] + chat_history
+        llm = await ctx.get("llm")
+
+        # convert the TransferToAgent pydantic model to a tool
+        tools = [get_function_tool(TransferToAgent)]
+
+        response = await llm.achat_with_tools(tools, chat_history=llm_input)
+        tool_calls = llm.get_tool_calls_from_response(
+            response, error_on_no_tool_call=False
+        )
+
+        # if no tool calls were made, the orchestrator probably needs more information
+        if len(tool_calls) == 0:
+            chat_history.append(response.message)
+            return StopEvent(
+                result={
+                    "response": response.message.content,
+                    "chat_history": chat_history,
+                }
+            )
+
+        tool_call = tool_calls[0]
+        selected_agent = tool_call.tool_kwargs["agent_name"]
+        await ctx.set("active_speaker", selected_agent)
+
+        ctx.write_event_to_stream(
+            ProgressEvent(msg=f"Transferring to agent {selected_agent}")
+        )
+
+        return ActiveSpeakerEvent()
+
+
+def get_initial_state() -> dict:
+    return {
+        "username": None,
+        "session_token": None,
+        "account_id": None,
+        "account_balance": None,
+    }
+
+
+def get_stock_lookup_tools() -> list[BaseTool]:
+    def lookup_stock_price(ctx: Context, stock_symbol: str) -> str:
+        """Useful for looking up a stock price."""
+        ctx.write_event_to_stream(
+            ProgressEvent(msg=f"Looking up stock price for {stock_symbol}")
+        )
+        return f"Symbol {stock_symbol} is currently trading at $100.00"
+
+    def search_for_stock_symbol(ctx: Context, company_name: str) -> str:
+        """Useful for searching for a stock symbol given a free-form company name."""
+        ctx.write_event_to_stream(ProgressEvent(msg="Searching for stock symbol"))
+        return company_name.upper()
+
+    return [
+        FunctionToolWithContext.from_defaults(fn=lookup_stock_price),
+        FunctionToolWithContext.from_defaults(fn=search_for_stock_symbol),
+    ]
+
+
+def get_authentication_tools() -> list[BaseTool]:
+    async def store_username(ctx: Context, username: str) -> None:
+        """Adds the username to the user state."""
+        ctx.write_event_to_stream(ProgressEvent(msg="Recording username"))
+        user_state = await ctx.get("user_state")
+        user_state["username"] = username
+        await ctx.set("user_state", user_state)
+
+    async def login(ctx: Context, password: str) -> str:
+        """Given a password, logs in and stores a session token in the user state."""
+        user_state = await ctx.get("user_state")
+        username = user_state["username"]
+        ctx.write_event_to_stream(ProgressEvent(msg=f"Logging in user {username}"))
+        # todo: actually check the password
+        session_token = "1234567890"
+        user_state["session_token"] = session_token
+        user_state["account_id"] = "123"
+        user_state["account_balance"] = 1000
+        await ctx.set("user_state", user_state)
+
+        return f"Logged in user {username} with session token {session_token}. They have an account with id {user_state['account_id']} and a balance of ${user_state['account_balance']}."
+
+    async def is_authenticated(ctx: Context) -> bool:
+        """Checks if the user has a session token."""
+        ctx.write_event_to_stream(ProgressEvent(msg="Checking if authenticated"))
+        user_state = await ctx.get("user_state")
+        return user_state["session_token"] is not None
+
+    return [
+        FunctionToolWithContext.from_defaults(async_fn=store_username),
+        FunctionToolWithContext.from_defaults(async_fn=login),
+        FunctionToolWithContext.from_defaults(async_fn=is_authenticated),
+    ]
+
+
+def get_account_balance_tools() -> list[BaseTool]:
+    async def get_account_id(ctx: Context, account_name: str) -> str:
+        """Useful for looking up an account ID."""
+        ctx.write_event_to_stream(
+            ProgressEvent(msg=f"Looking up account ID for {account_name}")
+        )
+        user_state = await ctx.get("user_state")
+        account_id = user_state["account_id"]
+
+        return f"Account id is {account_id}"
+
+    async def get_account_balance(ctx: Context, account_id: str) -> str:
+        """Useful for looking up an account balance."""
+        ctx.write_event_to_stream(
+            ProgressEvent(msg=f"Looking up account balance for {account_id}")
+        )
+        user_state = await ctx.get("user_state")
+        account_balance = user_state["account_balance"]
+
+        return f"Account {account_id} has a balance of ${account_balance}"
+
+    async def is_authenticated(ctx: Context) -> bool:
+        """Checks if the user has a session token."""
+        ctx.write_event_to_stream(ProgressEvent(msg="Checking if authenticated"))
+        user_state = await ctx.get("user_state")
+        return user_state["session_token"] is not None
+
+    return [
+        FunctionToolWithContext.from_defaults(async_fn=get_account_id),
+        FunctionToolWithContext.from_defaults(async_fn=get_account_balance),
+        FunctionToolWithContext.from_defaults(async_fn=is_authenticated),
+    ]
+
+
+def get_transfer_money_tools() -> list[BaseTool]:
+    def transfer_money(
+        ctx: Context, from_account_id: str, to_account_id: str, amount: int
+    ) -> str:
+        """Useful for transferring money between accounts."""
+        ctx.write_event_to_stream(
+            ProgressEvent(
+                msg=f"Transferring {amount} from {from_account_id} to account {to_account_id}"
+            )
+        )
+        return f"Transferred {amount} to account {to_account_id}"
+
+    async def balance_sufficient(ctx: Context, account_id: str, amount: int) -> bool:
+        """Useful for checking if an account has enough money to transfer."""
+        ctx.write_event_to_stream(
+            ProgressEvent(msg="Checking if balance is sufficient")
+        )
+        user_state = await ctx.get("user_state")
+        return user_state["account_balance"] >= amount
+
+    async def has_balance(ctx: Context) -> bool:
+        """Useful for checking if an account has a balance."""
+        ctx.write_event_to_stream(
+            ProgressEvent(msg="Checking if account has a balance")
+        )
+        user_state = await ctx.get("user_state")
+        return (
+            user_state["account_balance"] is not None
+            and user_state["account_balance"] > 0
+        )
+
+    async def is_authenticated(ctx: Context) -> bool:
+        """Checks if the user has a session token."""
+        ctx.write_event_to_stream(ProgressEvent(msg="Checking if authenticated"))
+        user_state = await ctx.get("user_state")
+        return user_state["session_token"] is not None
+
+    return [
+        FunctionToolWithContext.from_defaults(fn=transfer_money),
+        FunctionToolWithContext.from_defaults(async_fn=balance_sufficient),
+        FunctionToolWithContext.from_defaults(async_fn=has_balance),
+        FunctionToolWithContext.from_defaults(async_fn=is_authenticated),
+    ]
+
+
+def get_agent_configs() -> list[AgentConfig]:
+    return [
+        AgentConfig(
+            name="Stock Lookup Agent",
+            description="Looks up stock prices and symbols",
+            system_prompt="""
+You are a helpful assistant that is looking up stock prices.
+The user may not know the stock symbol of the company they're interested in,
+so you can help them look it up by the name of the company.
+You can only look up stock symbols given to you by the search_for_stock_symbol tool, don't make them up. Trust the output of the search_for_stock_symbol tool even if it doesn't make sense to you.
+            """,
+            tools=get_stock_lookup_tools(),
+        ),
+        AgentConfig(
+            name="Authentication Agent",
+            description="Handles user authentication",
+            system_prompt="""
+You are a helpful assistant that is authenticating a user.
+Your task is to get a valid session token stored in the user state.
+To do this, the user must supply you with a username and a valid password. You can ask them to supply these.
+If the user supplies a username and password, call the tool "login" to log them in.
+Once the user is logged in and authenticated, you can transfer them to another agent.
+            """,
+            tools=get_authentication_tools(),
+        ),
+        AgentConfig(
+            name="Account Balance Agent",
+            description="Checks account balances",
+            system_prompt="""
+You are a helpful assistant that is looking up account balances.
+The user may not know the account ID of the account they're interested in,
+so you can help them look it up by the name of the account.
+The user can only do this if they are authenticated, which you can check with the is_authenticated tool.
+If they aren't authenticated, tell them to authenticate first and call the "RequestTransfer" tool.
+If they're trying to transfer money, they have to check their account balance first, which you can help with.
+            """,
+            tools=get_account_balance_tools(),
+        ),
+        AgentConfig(
+            name="Transfer Money Agent",
+            description="Handles money transfers between accounts",
+            system_prompt="""
+You are a helpful assistant that transfers money between accounts.
+The user can only do this if they are authenticated, which you can check with the is_authenticated tool.
+If they aren't authenticated, tell them to authenticate first and call the "RequestTransfer" tool.
+The user must also have looked up their account balance already, which you can check with the has_balance tool.
+If they haven't already, tell them to look up their account balance first and call the "RequestTransfer" tool.
+            """,
+            tools=get_transfer_money_tools(),
+            tools_requiring_human_confirmation=["transfer_money"],
+        ),
+    ]
+
 
 async def main():
-    c = ConciergeWorkflow(timeout=1200, verbose=True)
-    result = await c.run()
-    print(result)
+    """Main function to run the workflow."""
+
+    llm = OpenAI(model="gpt-4o", temperature=0.4)
+    memory = ChatMemoryBuffer.from_defaults(llm=llm)
+    initial_state = get_initial_state()
+    agent_configs = get_agent_configs()
+    workflow = ConciergeAgent(timeout=None)
+
+    handler = workflow.run(
+        user_msg="Hello!",
+        agent_configs=agent_configs,
+        llm=llm,
+        chat_history=[],
+        initial_state=initial_state,
+    )
+
+    while True:
+        async for event in handler.stream_events():
+            if isinstance(event, ToolRequestEvent):
+                print("SYSTEM >> I need approval for the following tool call:")
+                print(event.tool_name)
+                print(event.tool_kwargs)
+                print()
+
+                approved = input("Do you approve? (y/n): ")
+                if "y" in approved.lower():
+                    handler.ctx.send_event(
+                        ToolApprovedEvent(
+                            tool_id=event.tool_id,
+                            tool_name=event.tool_name,
+                            tool_kwargs=event.tool_kwargs,
+                            approved=True,
+                        )
+                    )
+                else:
+                    reason = input("Why not? (reason): ")
+                    handler.ctx.send_event(
+                        ToolApprovedEvent(
+                            tool_name=event.tool_name,
+                            tool_id=event.tool_id,
+                            tool_kwargs=event.tool_kwargs,
+                            approved=False,
+                            response=reason,
+                        )
+                    )
+            elif isinstance(event, ProgressEvent):
+                print("SYSTEM >> ", event.msg)
+
+        result = await handler
+        print("AGENT >> ", result["response"])
+
+        # update the memory with only the new chat history
+        for i, msg in enumerate(result["chat_history"]):
+            if i >= len(memory.get()):
+                memory.put(msg)
+
+        user_msg = input("USER >> ")
+        if user_msg.strip().lower() in ["exit", "quit", "bye"]:
+            break
+
+        # pass in the existing context and continue the conversation
+        handler = workflow.run(
+            ctx=handler.ctx,
+            user_msg=user_msg,
+            agent_configs=agent_configs,
+            llm=llm,
+            chat_history=memory.get(),
+            initial_state=initial_state,
+        )
+
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())

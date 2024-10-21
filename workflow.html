@@ -1,12 +1,12 @@
 <html>
     <head>
         <meta charset="utf-8">
-        
+
             <script src="lib/bindings/utils.js"></script>
             <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/dist/dist/vis-network.min.css" integrity="sha512-WgxfT5LWjfszlPHXRmBWHkV2eceiWTOBvrKCNbdgDYTHrT2AeLCGbF4sZlZw3UMN3WtL0tGUoIAKsu8mllg/XA==" crossorigin="anonymous" referrerpolicy="no-referrer" />
             <script src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/dist/vis-network.min.js" integrity="sha512-LnvoEWDFrqGHlHmDD2101OrLcbsfkrzoSpvtSQtxK3RMnRV0eOkhhBN2dXHKRrUU8p2DGRTk35n4O8nWSVe1mQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-            
-        
+
+
 <center>
 <h1></h1>
 </center>
@@ -40,24 +40,24 @@
                  float: left;
              }
 
-             
 
-             
 
-             
+
+
+
         </style>
     </head>
 
 
     <body>
         <div class="card" style="width: 100%">
-            
-            
+
+
             <div id="mynetwork" class="card-body"></div>
         </div>
 
-        
-        
+
+
 
         <script type="text/javascript">
 
@@ -77,19 +77,19 @@
                   value : []
               };
 
-              
 
-              
+
+
 
               // This method is responsible for drawing the graph, returns the drawn network
               function drawGraph() {
                   var container = document.getElementById('mynetwork');
 
-                  
+
 
                   // parsing and collecting nodes and edges from the python
-                  nodes = new vis.DataSet([{"color": "#FFA07A", "id": "StopEvent", "label": "StopEvent", "shape": "ellipse"}, {"color": "#ADD8E6", "id": "_done", "label": "_done", "shape": "box"}, {"color": "#ADD8E6", "id": "account_balance", "label": "account_balance", "shape": "box"}, {"color": "#90EE90", "id": "AccountBalanceEvent", "label": "AccountBalanceEvent", "shape": "ellipse"}, {"color": "#ADD8E6", "id": "authenticate", "label": "authenticate", "shape": "box"}, {"color": "#90EE90", "id": "AuthenticateEvent", "label": "AuthenticateEvent", "shape": "ellipse"}, {"color": "#ADD8E6", "id": "concierge", "label": "concierge", "shape": "box"}, {"color": "#90EE90", "id": "ConciergeEvent", "label": "ConciergeEvent", "shape": "ellipse"}, {"color": "#E27AFF", "id": "StartEvent", "label": "StartEvent", "shape": "ellipse"}, {"color": "#ADD8E6", "id": "initialize", "label": "initialize", "shape": "box"}, {"color": "#90EE90", "id": "InitializeEvent", "label": "InitializeEvent", "shape": "ellipse"}, {"color": "#ADD8E6", "id": "orchestrator", "label": "orchestrator", "shape": "box"}, {"color": "#90EE90", "id": "OrchestratorEvent", "label": "OrchestratorEvent", "shape": "ellipse"}, {"color": "#ADD8E6", "id": "stock_lookup", "label": "stock_lookup", "shape": "box"}, {"color": "#90EE90", "id": "StockLookupEvent", "label": "StockLookupEvent", "shape": "ellipse"}, {"color": "#ADD8E6", "id": "transfer_money", "label": "transfer_money", "shape": "box"}, {"color": "#90EE90", "id": "TransferMoneyEvent", "label": "TransferMoneyEvent", "shape": "ellipse"}]);
-                  edges = new vis.DataSet([{"arrows": "to", "from": "StopEvent", "to": "_done"}, {"arrows": "to", "from": "StopEvent", "to": "_done"}, {"arrows": "to", "from": "account_balance", "to": "AuthenticateEvent"}, {"arrows": "to", "from": "account_balance", "to": "ConciergeEvent"}, {"arrows": "to", "from": "AccountBalanceEvent", "to": "account_balance"}, {"arrows": "to", "from": "authenticate", "to": "ConciergeEvent"}, {"arrows": "to", "from": "AuthenticateEvent", "to": "authenticate"}, {"arrows": "to", "from": "concierge", "to": "InitializeEvent"}, {"arrows": "to", "from": "concierge", "to": "StopEvent"}, {"arrows": "to", "from": "concierge", "to": "OrchestratorEvent"}, {"arrows": "to", "from": "ConciergeEvent", "to": "concierge"}, {"arrows": "to", "from": "StartEvent", "to": "concierge"}, {"arrows": "to", "from": "initialize", "to": "ConciergeEvent"}, {"arrows": "to", "from": "InitializeEvent", "to": "initialize"}, {"arrows": "to", "from": "orchestrator", "to": "ConciergeEvent"}, {"arrows": "to", "from": "orchestrator", "to": "StockLookupEvent"}, {"arrows": "to", "from": "orchestrator", "to": "AuthenticateEvent"}, {"arrows": "to", "from": "orchestrator", "to": "AccountBalanceEvent"}, {"arrows": "to", "from": "orchestrator", "to": "TransferMoneyEvent"}, {"arrows": "to", "from": "orchestrator", "to": "StopEvent"}, {"arrows": "to", "from": "OrchestratorEvent", "to": "orchestrator"}, {"arrows": "to", "from": "stock_lookup", "to": "ConciergeEvent"}, {"arrows": "to", "from": "StockLookupEvent", "to": "stock_lookup"}, {"arrows": "to", "from": "transfer_money", "to": "AuthenticateEvent"}, {"arrows": "to", "from": "transfer_money", "to": "AccountBalanceEvent"}, {"arrows": "to", "from": "transfer_money", "to": "ConciergeEvent"}, {"arrows": "to", "from": "TransferMoneyEvent", "to": "transfer_money"}]);
+                  nodes = new vis.DataSet([{"color": "#FFA07A", "id": "StopEvent", "label": "StopEvent", "shape": "ellipse"}, {"color": "#ADD8E6", "id": "_done", "label": "_done", "shape": "box"}, {"color": "#ADD8E6", "id": "aggregate_tool_results", "label": "aggregate_tool_results", "shape": "box"}, {"color": "#90EE90", "id": "ToolCallResultEvent", "label": "ToolCallResultEvent", "shape": "ellipse"}, {"color": "#ADD8E6", "id": "handle_tool_approval", "label": "handle_tool_approval", "shape": "box"}, {"color": "#90EE90", "id": "ToolApprovedEvent", "label": "ToolApprovedEvent", "shape": "ellipse"}, {"color": "#ADD8E6", "id": "handle_tool_call", "label": "handle_tool_call", "shape": "box"}, {"color": "#90EE90", "id": "ToolCallEvent", "label": "ToolCallEvent", "shape": "ellipse"}, {"color": "#ADD8E6", "id": "orchestrator", "label": "orchestrator", "shape": "box"}, {"color": "#90EE90", "id": "OrchestratorEvent", "label": "OrchestratorEvent", "shape": "ellipse"}, {"color": "#ADD8E6", "id": "setup", "label": "setup", "shape": "box"}, {"color": "#E27AFF", "id": "StartEvent", "label": "StartEvent", "shape": "ellipse"}, {"color": "#ADD8E6", "id": "speak_with_sub_agent", "label": "speak_with_sub_agent", "shape": "box"}, {"color": "#90EE90", "id": "ActiveSpeakerEvent", "label": "ActiveSpeakerEvent", "shape": "ellipse"}, {"color": "#90EE90", "id": "ToolRequestEvent", "label": "ToolRequestEvent", "shape": "ellipse"}, {"color": "#BEDAE4", "id": "external_step", "label": "external_step", "shape": "box"}]);
+                  edges = new vis.DataSet([{"arrows": "to", "from": "StopEvent", "to": "_done"}, {"arrows": "to", "from": "aggregate_tool_results", "to": "ActiveSpeakerEvent"}, {"arrows": "to", "from": "ToolCallResultEvent", "to": "aggregate_tool_results"}, {"arrows": "to", "from": "handle_tool_approval", "to": "ToolCallEvent"}, {"arrows": "to", "from": "handle_tool_approval", "to": "ToolCallResultEvent"}, {"arrows": "to", "from": "ToolApprovedEvent", "to": "handle_tool_approval"}, {"arrows": "to", "from": "external_step", "to": "ToolApprovedEvent"}, {"arrows": "to", "from": "handle_tool_call", "to": "ActiveSpeakerEvent"}, {"arrows": "to", "from": "ToolCallEvent", "to": "handle_tool_call"}, {"arrows": "to", "from": "orchestrator", "to": "ActiveSpeakerEvent"}, {"arrows": "to", "from": "orchestrator", "to": "StopEvent"}, {"arrows": "to", "from": "OrchestratorEvent", "to": "orchestrator"}, {"arrows": "to", "from": "setup", "to": "ActiveSpeakerEvent"}, {"arrows": "to", "from": "setup", "to": "OrchestratorEvent"}, {"arrows": "to", "from": "StartEvent", "to": "setup"}, {"arrows": "to", "from": "speak_with_sub_agent", "to": "ToolCallEvent"}, {"arrows": "to", "from": "speak_with_sub_agent", "to": "ToolRequestEvent"}, {"arrows": "to", "from": "ToolRequestEvent", "to": "external_step"}, {"arrows": "to", "from": "speak_with_sub_agent", "to": "StopEvent"}, {"arrows": "to", "from": "ActiveSpeakerEvent", "to": "speak_with_sub_agent"}]);
 
                   nodeColors = {};
                   allNodes = nodes.get({ returnType: "Object" });
@@ -130,21 +130,21 @@
     }
 };
 
-                  
 
 
-                  
+
+
 
                   network = new vis.Network(container, data, options);
 
-                  
-
-                  
-
-                  
 
 
-                  
+
+
+
+
+
+
 
                   return network;
 
