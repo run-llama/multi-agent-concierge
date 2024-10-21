@@ -1,3 +1,7 @@
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
 [tool.poetry]
 name = "mutli-agent-concierge"
 version = "0.2.0"
@@ -15,8 +19,3 @@ colorama = "^0.4.6"
 llama-index-llms-anthropic = "^0.2.0"
 llama-index-agent-openai = "^0.3.0"
 llama-index-utils-workflow = "^0.2.0"
-
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"

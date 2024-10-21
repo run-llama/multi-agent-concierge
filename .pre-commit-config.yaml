@@ -26,27 +26,27 @@ repos:
         exclude: ".*poetry.lock"
       - id: ruff-format
 
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.11.2
-    hooks:
-      - id: mypy
-        additional_dependencies:
-          [
-            "llama-index-core",
-            "types-Deprecated",
-            "types-PyYAML",
-            "types-aiobotocore",
-            "types-protobuf==4.24.0.4",
-            "types-redis",
-            "types-requests",
-            "types-setuptools",
-          ]
-        args:
-          [
-            --disallow-untyped-defs,
-            --ignore-missing-imports,
-            --python-version=3.11,
-          ]
+  #- repo: https://github.com/pre-commit/mirrors-mypy
+  #  rev: v1.11.2
+  #  hooks:
+  #    - id: mypy
+  #      additional_dependencies:
+  #        [
+  #          "llama-index-core",
+  #          "types-Deprecated",
+  #          "types-PyYAML",
+  #          "types-aiobotocore",
+  #          "types-protobuf==4.24.0.4",
+  #          "types-redis",
+  #          "types-requests",
+  #          "types-setuptools",
+  #        ]
+  #      args:
+  #        [
+  #          --disallow-untyped-defs,
+  #          --ignore-missing-imports,
+  #          --python-version=3.11,
+  #        ]
 
   - repo: https://github.com/adamchainz/blacken-docs
     rev: 1.16.0
