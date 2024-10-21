@@ -64,6 +64,7 @@ repos:
     hooks:
       - id: codespell
         additional_dependencies: [tomli]
+        exclude: ".*poetry.lock|.*html"
 
   - repo: https://github.com/pappasam/toml-sort
     rev: v0.23.1
