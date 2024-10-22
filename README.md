@@ -122,4 +122,4 @@ At any time, the user can end the conversation by saying "bye"/"quit","exit".
 
 ## What's next
 
-We think there's some novel stuff in here: coordinating multiple agents "speaking" simultaneously, creating implicit "chains" of agents through natural language instructions, using a "continuation" agent to manage those chains, and using a global state this way. We're excited to see what you do with the patterns we've laid out here.
+We think there's some novel stuff in here: coordinating multiple agents "speaking" simultaneously, sharing a global state and chat history between agents, and using human approval for tool calls. We're excited to see what you do with the patterns we've laid out here.
