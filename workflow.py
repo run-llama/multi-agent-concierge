@@ -239,6 +239,7 @@ class ConciergeAgent(Workflow):
                 chat_message=ChatMessage(
                     role="tool",
                     content=ev.response or self.default_tool_reject_str,
+                    additional_kwargs={"tool_call_id": ev.tool_id},
                 )
             )
 
